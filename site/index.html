@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Distributed Training Demo</title>
+<meta name="description" content="One PyTorch training loop, four ways to split it across processes: single, DDP, FSDP and pipeline parallel — with real results showing they all train the identical model.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect x='3' y='5' width='7' height='22' rx='2' fill='%232a78d6'/><rect x='12.5' y='5' width='7' height='22' rx='2' fill='%23eb6834'/><rect x='22' y='5' width='7' height='22' rx='2' fill='%231baf7a'/></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="wrap hero">
+  <p class="eyebrow">PyTorch · torchrun · Gloo / NCCL</p>
+  <h1>Distributed Training Demo</h1>
+  <p class="lede">One training loop, four ways to split it across processes. Set one flag —
+    <code>--strategy</code> to <code>single</code>, <code>ddp</code>, <code>fsdp</code> or <code>pipeline</code> — and the same transformer trains the same way,
+    to the same numbers.</p>
+  <div class="tiles" id="tiles"></div>
+</header>
+
+<main>
+  <section class="wrap" id="how">
+    <h2>How each strategy splits the work</h2>
+    <p class="sub">Pick a strategy and press play. Each column is one process (a “rank”). The bars are the
+      model’s layers; the squares underneath are the rows of the batch.</p>
+
+    <div class="controls">
+      <div class="seg" role="tablist" aria-label="Strategy" id="stratSeg">
+        <button role="tab" data-s="single">Single</button>
+        <button role="tab" data-s="ddp" aria-selected="true">DDP</button>
+        <button role="tab" data-s="fsdp">FSDP</button>
+        <button role="tab" data-s="pipeline">Pipeline</button>
+      </div>
+      <label class="ctl">Processes
+        <select id="worldSel"><option>2</option><option selected>4</option></select>
+      </label>
+      <label class="ctl" id="mbCtl">Microbatches
+        <input type="range" id="mbRange" min="1" max="8" value="4"><output id="mbOut">4</output>
+      </label>
+      <div class="play">
+        <button id="playBtn" class="btn primary" aria-label="Play">▶ Play</button>
+        <button id="stepBtn" class="btn">Next step →</button>
+      </div>
+    </div>
+
+    <div class="stage-card">
+      <div class="phases" id="phases"></div>
+      <div class="diagram-scroll"><svg id="diagram" role="img" aria-label="Diagram of the selected strategy"></svg></div>
+      <p class="phase-text" id="phaseText"></p>
+    </div>
+
+    <div class="cards" id="cards">
+      <article><h3><span class="dot s1"></span>Single</h3><p>One process holds the whole model and the whole batch. The reference every other strategy must match.</p></article>
+      <article><h3><span class="dot s2"></span>DDP — data parallel</h3><p>Every rank holds a full copy of the model and trains on its slice of the batch. Gradients are averaged with an all-reduce, so all copies take the same step.</p></article>
+      <article><h3><span class="dot s3"></span>FSDP — fully sharded</h3><p>Like DDP, but each rank stores only 1/W of the weights, gradients and optimizer state. Layers are gathered just in time and freed after use.</p></article>
+      <article><h3><span class="dot s4"></span>Pipeline</h3><p>The layers are cut into consecutive stages, one per rank. Microbatches flow through like an assembly line; idle slots at the start and end are the “bubble”.</p></article>
+    </div>
+  </section>
+
+  <section class="wrap" id="results">
+    <h2>Real runs, same answer</h2>
+    <p class="sub" id="runNote">Measured by <code>scripts/benchmark.py</code>.</p>
+
+    <figure class="chart-card">
+      <figcaption><b>Training loss by step</b><span>Every distributed run lands on the single-process curve — the lines sit on top of each other.</span></figcaption>
+      <div class="legend" id="lossLegend"></div>
+      <div class="chart-box tall"><canvas id="lossChart" aria-label="Loss curves for every run"></canvas></div>
+    </figure>
+
+    <div class="grid2">
+      <figure class="chart-card">
+        <figcaption><b>Memory held per rank</b><span>Parameters, gradients and Adam state on the busiest rank.</span></figcaption>
+        <div class="legend" id="memLegend"></div>
+        <div class="chart-box"><canvas id="memChart" aria-label="Memory per rank for each run"></canvas></div>
+      </figure>
+      <figure class="chart-card">
+        <figcaption><b>Data each rank sends per step</b><span>Textbook estimate from the communication pattern, in MB.</span></figcaption>
+        <div class="chart-box"><canvas id="commChart" aria-label="Communication per step for each run"></canvas></div>
+      </figure>
+    </div>
+
+    <figure class="chart-card">
+      <figcaption><b>Throughput</b><span id="tputNote">Tokens per second, after warm-up.</span></figcaption>
+      <div class="chart-box"><canvas id="tputChart" aria-label="Throughput for each run"></canvas></div>
+    </figure>
+
+    <details class="table-view">
+      <summary>All numbers as a table</summary>
+      <div class="table-scroll"><table id="runTable"></table></div>
+    </details>
+  </section>
+
+  <section class="wrap" id="run">
+    <h2>Run it yourself</h2>
+    <div class="code-grid">
+<pre><code><span class="c"># setup (CPU is fine)</span>
+uv venv -p 3.11 .venv
+uv pip install -p .venv/bin/python torch "numpy&lt;2" pytest</code></pre>
+<pre><code><span class="c"># same loop, four strategies</span>
+.venv/bin/python -m disttrain.train --strategy single
+.venv/bin/torchrun --nproc-per-node 4 -m disttrain.train --strategy ddp
+.venv/bin/torchrun --nproc-per-node 4 -m disttrain.train --strategy fsdp
+.venv/bin/torchrun --nproc-per-node 4 -m disttrain.train --strategy pipeline</code></pre>
+    </div>
+    <p class="sub">On machines with NVIDIA GPUs the same commands pick NCCL and one GPU per process automatically.
+      Add <code>--nnodes</code> and <code>--rdzv-endpoint</code> to torchrun to span machines.</p>
+  </section>
+</main>
+
+<footer class="wrap foot">
+  <a href="https://github.com/amalmehta/DistributedTraining">Source on GitHub</a>
+  <a href="https://github.com/amalmehta/DistributedTraining/blob/main/docs/INSTRUCTIONS.md">Instructions</a>
+  <a href="https://github.com/amalmehta/DistributedTraining/blob/main/docs/SYSTEM-DESIGN.md">System design</a>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="data/results.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

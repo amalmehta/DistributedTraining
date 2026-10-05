@@ -1,0 +1,13 @@
+[project]
+name = "distributed-training-demo"
+version = "0.1.0"
+description = "Distributed Training Demo: one PyTorch training loop, four ways to split it (single, DDP, FSDP, pipeline)"
+requires-python = ">=3.10"
+dependencies = ["torch>=2.2", "numpy<2"]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
