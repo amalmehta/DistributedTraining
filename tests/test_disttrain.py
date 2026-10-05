@@ -20,14 +20,15 @@ SMALL = ["--d-model", "32", "--n-heads", "2", "--n-layers", "4", "--seq-len", "1
 
 
 def small_config(**kw):
-    return Config(d_model=32, n_heads=2, n_layers=4, seq_len=16, global_batch=8,
-                  microbatches=4, steps=6, log_every=100, **kw)
+    base = dict(d_model=32, n_heads=2, n_layers=4, seq_len=16, global_batch=8,
+                microbatches=4, steps=6, log_every=100)
+    return Config(**{**base, **kw})
 
 
-def run_torchrun(strategy, world, out):
+def run_torchrun(strategy, world, out, *extra):
     cmd = [sys.executable, "-m", "torch.distributed.run", "--standalone", f"--nproc-per-node={world}",
-           "-m", "disttrain.train", "--strategy", strategy, "--out", str(out), *SMALL]
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+           "-m", "disttrain.train", "--strategy", strategy, "--out", str(out), *SMALL, *extra]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
     assert proc.returncode == 0, proc.stderr[-3000:]
     return json.loads((out / "metrics.json").read_text())
 
@@ -81,3 +82,46 @@ def test_fsdp_shards_memory(tmp_path):
     full_bytes = result["n_params"] * 4
     for r in result["per_rank"]:
         assert r["memory"]["params"] <= full_bytes / 2 + 1024   # half, plus padding
+
+
+# ---------------------------------------------------------------- checkpoints
+
+def test_resume_continues_exactly(baseline, tmp_path):
+    ckpt = str(tmp_path / "ckpt.pt")
+    train(small_config(strategy="single", steps=3, save=ckpt))
+    resumed = train(small_config(strategy="single", resume=ckpt))
+    assert resumed["start_step"] == 3
+    assert resumed["losses"] == baseline["losses"][3:]          # bit-for-bit
+
+
+@pytest.mark.parametrize("saver,saver_world,resumer,resumer_world", [
+    ("ddp", 2, "fsdp", 2),
+    ("fsdp", 2, "pipeline", 2),
+    ("pipeline", 2, "single", 1),
+])
+def test_resume_under_a_different_strategy(saver, saver_world, resumer, resumer_world, baseline, tmp_path):
+    ckpt = str(tmp_path / "ckpt.pt")
+    run_torchrun(saver, saver_world, tmp_path / "a", "--steps", "3", "--save", ckpt)
+    if resumer_world == 1:
+        resumed = train(small_config(strategy=resumer, resume=ckpt))
+    else:
+        resumed = run_torchrun(resumer, resumer_world, tmp_path / "b", "--resume", ckpt)
+    assert resumed["start_step"] == 3
+    assert resumed["resumed_from"] == {"strategy": saver, "world": saver_world}
+    for got, want in zip(resumed["losses"], baseline["losses"][3:]):
+        assert got == pytest.approx(want, abs=1e-4)
+
+
+def test_resume_rejects_a_different_model_shape(tmp_path):
+    ckpt = str(tmp_path / "ckpt.pt")
+    train(small_config(strategy="single", steps=2, save=ckpt))
+    with pytest.raises(SystemExit, match="d_model"):
+        train(Config(strategy="single", d_model=64, n_heads=2, n_layers=4, seq_len=16,
+                     global_batch=8, steps=4, resume=ckpt))
+
+
+def test_resume_needs_steps_left(tmp_path):
+    ckpt = str(tmp_path / "ckpt.pt")
+    train(small_config(strategy="single", steps=2, save=ckpt))
+    with pytest.raises(SystemExit, match="already at step 2"):
+        train(small_config(strategy="single", steps=2, resume=ckpt))

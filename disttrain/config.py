@@ -25,6 +25,10 @@ class Config:
     data_seed: int = 1234        # the Markov chain and the batches drawn from it
     log_every: int = 10
     out: str = ""                # folder for metrics.json; empty = don't write
+    # checkpoints
+    save: str = ""               # checkpoint file to write; empty = don't save
+    save_every: int = 0          # also save every N steps (0 = only at the end)
+    resume: str = ""             # checkpoint file to continue from
 
     def to_dict(self):
         return asdict(self)

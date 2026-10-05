@@ -339,6 +339,46 @@
       `<span><i style="background:${css(SLOT[r.config.strategy])};${r.world === 4 ? "background:repeating-linear-gradient(90deg," + css(SLOT[r.config.strategy]) + " 0 5px,transparent 5px 8px)" : ""}"></i>${label(r)}</span>`).join("") +
       `<span><i style="background:repeating-linear-gradient(90deg,${text3} 0 2px,transparent 2px 5px)"></i>Best possible</span>`;
 
+    // checkpoint demo: first half under one strategy, second half under another
+    const rs = data.resume;
+    if (rs) {
+      const cut = rs.second.start_step;
+      const pad = (part) => steps.map((i) => (i >= part.start_step && i < part.start_step + part.losses.length ? part.losses[i - part.start_step] : null));
+      const name = (part) => `${NAMES[part.strategy]} ×${part.world}`;
+      const cutLine = {
+        id: "cut",
+        afterDatasetsDraw(c) {
+          const x = c.scales.x.getPixelForValue(cut), { top, bottom } = c.chartArea, g = c.ctx;
+          g.save(); g.strokeStyle = text3; g.setLineDash([3, 3]); g.beginPath(); g.moveTo(x, top); g.lineTo(x, bottom); g.stroke();
+          g.setLineDash([]); g.fillStyle = css("--text"); g.font = "500 12px Inter, sans-serif";
+          g.fillText(`checkpoint at step ${cut}`, x + 6, top + 14); g.restore();
+        },
+      };
+      charts.push(new Chart($("#resumeChart"), {
+        type: "line",
+        data: {
+          labels: steps,
+          datasets: [
+            // The reference is a wide translucent band underneath; the stitched run is drawn on top of it.
+            { label: "Single, uninterrupted", data: single.losses, borderColor: css("--s1") + "55", borderWidth: 8, borderJoinStyle: "round", pointRadius: 0, pointHoverRadius: 4, order: 2 },
+            { label: `${name(rs.first)}, saved`, data: pad(rs.first), borderColor: css(SLOT[rs.first.strategy]), borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, order: 1 },
+            { label: `${name(rs.second)}, resumed`, data: pad(rs.second), borderColor: css(SLOT[rs.second.strategy]), borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, order: 1 },
+          ],
+        },
+        plugins: [cutLine],
+        options: {
+          responsive: true, maintainAspectRatio: false, animation: false, spanGaps: false,
+          interaction: { mode: "index", intersect: false },
+          plugins: { legend: { display: false }, tooltip: { ...tooltip, filter: (i) => i.parsed.y != null, callbacks: { title: (i) => `Step ${i[0].label}`, label: (c) => ` ${c.dataset.label}: ${c.parsed.y.toFixed(4)}` } } },
+          scales: scales("loss (nats)", { x: { ticks: { color: text2, maxTicksLimit: 8 }, title: { display: true, text: "step", color: text3 } } }),
+        },
+      }));
+      $("#resumeLegend").innerHTML = [["--s1", "Single, uninterrupted"], [SLOT[rs.first.strategy], `${name(rs.first)}, steps 0–${cut - 1}, then saved`], [SLOT[rs.second.strategy], `${name(rs.second)}, resumed from the file`]]
+        .map(([c, n], i) => `<span><i style="background:${css(c)}${i ? "" : "55;height:7px"}"></i>${n}</span>`).join("");
+      $("#resumeNote").textContent = `One checkpoint file holds the whole model and Adam state under plain layer names, so any strategy can pick it up. The stitched run never leaves the single-process curve (largest gap ${rs.max_diff_vs_single.toExponential(1)}).`;
+      $("#resumeCard").hidden = false;
+    }
+
     const labels = runs.map(label);
     const barBase = { borderRadius: 4, borderSkipped: "bottom", maxBarThickness: 44 };
 

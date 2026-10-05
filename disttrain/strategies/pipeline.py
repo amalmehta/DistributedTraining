@@ -14,6 +14,7 @@ import torch
 import torch.distributed as dist
 import torch.nn as nn
 
+from ..dist_utils import gather_objects
 from ..model import build_model, lm_loss
 from .base import Strategy
 
@@ -90,6 +91,23 @@ class PipelineStrategy(Strategy):
         report = torch.tensor([total], device=dev)
         dist.broadcast(report, src=ctx.world - 1)   # only the last stage knows the loss
         return report.item()
+
+    def named_params(self):
+        # Stage layer i is layer lo+i of the full model: "0.qkv.weight" -> "layers.3.qkv.weight".
+        lo = self.layer_range[0]
+        out = []
+        for name, p in self.model.named_parameters():
+            idx, rest = name.split(".", 1)
+            out.append((f"layers.{lo + int(idx)}.{rest}", p))
+        return out
+
+    def full_state(self):
+        # Each stage holds different layers; pool them so rank 0 has the whole model.
+        params, optim = {}, {}
+        for p, o in gather_objects(self.local_state(), self.ctx):
+            params.update(p)
+            optim.update(o)
+        return params, optim
 
     def comm_bytes_per_step(self, n_params):
         act = self.cfg.global_batch * self.cfg.seq_len * self.cfg.d_model * 4

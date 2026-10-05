@@ -4,6 +4,11 @@
     torchrun --nproc-per-node 4 -m disttrain.train --strategy ddp
     torchrun --nproc-per-node 4 -m disttrain.train --strategy fsdp
     torchrun --nproc-per-node 4 -m disttrain.train --strategy pipeline --microbatches 8
+
+Stop and resume, even under a different strategy:
+
+    torchrun --nproc-per-node 4 -m disttrain.train --strategy ddp --steps 75 --save ckpt.pt
+    torchrun --nproc-per-node 2 -m disttrain.train --strategy fsdp --steps 150 --resume ckpt.pt
 """
 
 import json
@@ -13,6 +18,7 @@ import time
 
 import torch
 
+from . import checkpoint
 from .config import Config, parse_args
 from .data import MarkovData
 from .dist_utils import cleanup, gather_objects, setup
@@ -35,8 +41,17 @@ def train(cfg: Config):
         print(f"[{cfg.strategy}] world={ctx.world} device={ctx.device} params={n_params:,} "
               f"floor={data.entropy_floor():.3f} nats")
 
+    start_step, resumed_from = 0, None
+    if cfg.resume:
+        start_step, resumed_from = checkpoint.load(cfg.resume, strategy, cfg)
+        if ctx.is_main:
+            print(f"  resumed at step {start_step} from {cfg.resume} "
+                  f"(saved by {resumed_from['strategy']} x{resumed_from['world']})")
+    if start_step >= cfg.steps:
+        raise SystemExit(f"checkpoint is already at step {start_step}; raise --steps to train further")
+
     losses, step_times = [], []
-    for step in range(cfg.steps):
+    for step in range(start_step, cfg.steps):
         tokens, targets = data.global_batch(step, cfg.global_batch)
         t0 = time.perf_counter()
         loss = strategy.train_step(tokens, targets)
@@ -46,6 +61,11 @@ def train(cfg: Config):
         losses.append(loss)
         if ctx.is_main and (step % cfg.log_every == 0 or step == cfg.steps - 1):
             print(f"  step {step:4d}  loss {loss:.4f}  {step_times[-1] * 1000:6.1f} ms")
+        last = step == cfg.steps - 1
+        if cfg.save and (last or (cfg.save_every and (step + 1) % cfg.save_every == 0)):
+            checkpoint.save(cfg.save, strategy, step + 1, cfg)
+            if ctx.is_main:
+                print(f"  saved step {step + 1} to {cfg.save}")
 
     # Every rank reports what it holds and sends; rank 0 writes it all down.
     per_rank = gather_objects({
@@ -66,6 +86,8 @@ def train(cfg: Config):
         "n_params": n_params,
         "entropy_floor": data.entropy_floor(),
         "uniform_loss": data.uniform_loss,
+        "start_step": start_step,
+        "resumed_from": resumed_from,
         "losses": losses,
         "final_loss": losses[-1],
         "mean_step_s": mean_step,

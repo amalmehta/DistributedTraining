@@ -36,6 +36,37 @@ class Strategy:
         """Bytes each rank sends per step (textbook estimate, fp32)."""
         return 0
 
+    # --- checkpointing ---------------------------------------------------------------
+    # The portable format: parameters and AdamW state keyed by their names in a plain
+    # TinyGPT ("layers.1.qkv.weight"), full-size tensors on CPU. Any strategy, at any
+    # process count, can write it and read it back.
+
+    def named_params(self):
+        """(TinyGPT name, local parameter) for what this rank holds. Single and DDP hold everything."""
+        model = getattr(self.model, "module", self.model)   # unwrap DDP
+        return list(model.named_parameters())
+
+    def full_state(self):
+        """(params, optimizer state) for the whole model. Collective: every rank calls it."""
+        return self.local_state()
+
+    def load_full_state(self, params, optim):
+        """Overwrite this rank's parameters and optimizer state from the portable format."""
+        with torch.no_grad():
+            for name, p in self.named_params():
+                p.copy_(params[name])
+                if name in optim:
+                    self.optimizer.state[p] = {k: v.clone().to(p.device) if v.dim() else v.clone()
+                                               for k, v in optim[name].items()}
+
+    def local_state(self):
+        params, optim = {}, {}
+        for name, p in self.named_params():
+            params[name] = p.detach().cpu().clone()
+            if p in self.optimizer.state:
+                optim[name] = {k: v.detach().cpu().clone() for k, v in self.optimizer.state[p].items()}
+        return params, optim
+
     # --- shared helpers ------------------------------------------------------------
     def make_optimizer(self, params):
         return torch.optim.AdamW(params, lr=self.cfg.lr, weight_decay=self.cfg.weight_decay)

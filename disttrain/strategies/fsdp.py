@@ -7,6 +7,7 @@ Memory per rank drops roughly W-fold for the price of extra communication.
 """
 
 import torch.distributed as dist
+from torch.distributed.fsdp import FullOptimStateDictConfig, FullStateDictConfig, StateDictType
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp.wrap import ModuleWrapPolicy
 
@@ -37,6 +38,30 @@ class FSDPStrategy(Strategy):
         report = loss.detach().clone()
         dist.all_reduce(report, op=dist.ReduceOp.SUM)
         return report.item() / self.ctx.world
+
+    def _full_state_dict_type(self, rank0_only):
+        # Offload only from GPU: on a CPU device, offload_to_cpu frees the very storage it reads.
+        offload = self.ctx.device.type == "cuda"
+        return FSDP.state_dict_type(
+            self.model, StateDictType.FULL_STATE_DICT,
+            FullStateDictConfig(offload_to_cpu=offload, rank0_only=rank0_only),
+            FullOptimStateDictConfig(offload_to_cpu=offload, rank0_only=rank0_only))
+
+    def full_state(self):
+        # FSDP all-gathers the shards and hands back plain TinyGPT names on rank 0.
+        with self._full_state_dict_type(rank0_only=True):
+            params = self.model.state_dict()
+            optim = FSDP.optim_state_dict(self.model, self.optimizer)
+        return params, optim.get("state", {})
+
+    def load_full_state(self, params, optim):
+        # Every rank loads the full tensors and FSDP keeps only its own shard of each.
+        group = {k: v for k, v in self.optimizer.param_groups[0].items() if k != "params"}
+        full_osd = {"state": optim, "param_groups": [{**group, "params": list(params)}]}
+        with self._full_state_dict_type(rank0_only=False):
+            self.model.load_state_dict(params)
+            osd = FSDP.optim_state_dict_to_load(self.model, self.optimizer, full_osd)
+        self.optimizer.load_state_dict(osd)
 
     def comm_bytes_per_step(self, n_params):
         # All-gather for forward, all-gather again for backward, reduce-scatter grads:

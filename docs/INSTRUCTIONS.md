@@ -40,8 +40,27 @@ Every run prints the loss every 10 steps and, with `--out some/folder`, writes
 | `--seed`, `--data-seed` | 0, 1234 | model init, data |
 | `--log-every` | 10 | print interval |
 | `--out` | (none) | folder to write `metrics.json` into |
+| `--save` | (none) | checkpoint file to write at the end of the run |
+| `--save-every` | 0 | also save every N steps (0 = only at the end) |
+| `--resume` | (none) | checkpoint file to continue from |
 
 Pipeline needs at least one transformer block per process: `--n-layers` ≥ processes.
+
+### Save and resume
+
+`--save` writes one checkpoint file (weights, AdamW state and the step number). `--resume`
+continues from it up to `--steps`. The file is the same whatever strategy wrote it, so you can
+switch strategy or process count in between:
+
+```bash
+.venv/bin/torchrun --nproc-per-node 4 -m disttrain.train --strategy ddp --steps 75 --save ckpt.pt
+.venv/bin/torchrun --nproc-per-node 2 -m disttrain.train --strategy fsdp --steps 150 --resume ckpt.pt
+```
+
+Use `--save-every 25` to keep a recent checkpoint during a long run (each save replaces the last).
+The model flags (`--vocab-size`, `--d-model`, `--n-heads`, `--n-layers`, `--seq-len`) must match
+the saved run; batch size, learning rate and the rest may change. With several machines, the
+file has to be on storage every machine can read.
 
 ### GPUs and multiple machines
 
@@ -61,8 +80,9 @@ torchrun --nnodes 2 --nproc-per-node 8 --rdzv-backend c10d --rdzv-endpoint HOST:
 .venv/bin/python -m pytest
 ```
 
-About three minutes on a laptop: the slow part launches real `torchrun` jobs and checks that
-DDP, FSDP and pipeline (2 and 4 stages) reproduce the single-process loss at every step.
+About five minutes on an idle laptop: the slow part launches real `torchrun` jobs and checks that
+DDP, FSDP and pipeline (2 and 4 stages) reproduce the single-process loss at every step, and that
+a run saved under one strategy resumes correctly under another.
 
 ## Benchmark and refresh the site
 
@@ -71,7 +91,10 @@ DDP, FSDP and pipeline (2 and 4 stages) reproduce the single-process loss at eve
 .venv/bin/python scripts/benchmark.py --quick  # 10 steps per run, to check it works
 ```
 
-This runs the seven configurations shown on the site and rewrites
+`--resume-only` keeps the existing runs and redoes just the checkpoint demo (DDP ×4 for half
+the steps, saved, then finished under FSDP ×2).
+
+This runs the seven configurations shown on the site, plus the checkpoint demo, and rewrites
 `site/data/results.json` and `site/data/results.js`.
 
 ## View the site

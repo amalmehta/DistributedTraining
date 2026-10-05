@@ -69,6 +69,12 @@
       <div class="chart-box tall"><canvas id="lossChart" aria-label="Loss curves for every run"></canvas></div>
     </figure>
 
+    <figure class="chart-card" id="resumeCard" hidden>
+      <figcaption><b>Stop, save, resume under a different strategy</b><span id="resumeNote"></span></figcaption>
+      <div class="legend" id="resumeLegend"></div>
+      <div class="chart-box"><canvas id="resumeChart" aria-label="Loss of a run that was checkpointed and resumed under another strategy"></canvas></div>
+    </figure>
+
     <div class="grid2">
       <figure class="chart-card">
         <figcaption><b>Memory held per rank</b><span>Parameters, gradients and Adam state on the busiest rank.</span></figcaption>
@@ -103,6 +109,9 @@ uv pip install -p .venv/bin/python torch "numpy&lt;2" pytest</code></pre>
 .venv/bin/torchrun --nproc-per-node 4 -m disttrain.train --strategy ddp
 .venv/bin/torchrun --nproc-per-node 4 -m disttrain.train --strategy fsdp
 .venv/bin/torchrun --nproc-per-node 4 -m disttrain.train --strategy pipeline</code></pre>
+<pre><code><span class="c"># save halfway, finish under another strategy</span>
+.venv/bin/torchrun --nproc-per-node 4 -m disttrain.train --strategy ddp --steps 75 --save ckpt.pt
+.venv/bin/torchrun --nproc-per-node 2 -m disttrain.train --strategy fsdp --steps 150 --resume ckpt.pt</code></pre>
     </div>
     <p class="sub">On machines with NVIDIA GPUs the same commands pick NCCL and one GPU per process automatically.
       Add <code>--nnodes</code> and <code>--rdzv-endpoint</code> to torchrun to span machines.</p>
