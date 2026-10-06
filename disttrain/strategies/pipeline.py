@@ -44,6 +44,9 @@ class PipelineStrategy(Strategy):
         cfg, ctx = self.cfg, self.ctx
         if cfg.global_batch % cfg.microbatches:
             raise SystemExit("--global-batch must be divisible by --microbatches")
+        if cfg.precision == "fp16":
+            # Each stage would need the same loss scale and the same skip-step decision.
+            raise SystemExit("pipeline supports --precision fp32 or bf16")
         full = build_model(cfg)   # build everything with the shared seed, keep only our slice
         lo, hi = stage_bounds(cfg.n_layers, ctx.world)[ctx.rank]
         self.layer_range = (lo, hi)
@@ -67,11 +70,14 @@ class PipelineStrategy(Strategy):
                 x = torch.empty(act_shape, device=dev)
                 dist.recv(x, src=ctx.rank - 1)
                 x.requires_grad_()
-            y = self.model(x)
+            with self.autocast():
+                y = self.model(x)
+                if self.last:
+                    y = lm_loss(y, tgt_mbs[i].to(dev)) / M   # mean over microbatches = mean over batch
             if self.last:
-                y = lm_loss(y, tgt_mbs[i].to(dev)) / M   # mean over microbatches = mean over batch
                 total += y.item()
             else:
+                y = y.float()   # activations travel between stages in fp32, whatever the precision
                 dist.send(y.detach(), dst=ctx.rank + 1)
             inputs.append(x)
             outputs.append(y)

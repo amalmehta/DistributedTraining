@@ -4,6 +4,7 @@ import argparse
 from dataclasses import dataclass, asdict, fields
 
 STRATEGIES = ("single", "ddp", "fsdp", "pipeline")
+PRECISIONS = ("fp32", "bf16", "fp16")
 
 
 @dataclass
@@ -19,6 +20,7 @@ class Config:
     global_batch: int = 32       # sequences per optimizer step, summed over all ranks
     microbatches: int = 4        # pipeline only: how many pieces each batch is cut into
     steps: int = 150
+    precision: str = "fp32"      # fp32, or bf16/fp16 mixed precision (weights stay fp32)
     lr: float = 3e-3
     weight_decay: float = 0.01
     seed: int = 0                # model init
@@ -41,5 +43,7 @@ def parse_args(argv=None) -> Config:
         kw = {"default": f.default, "type": type(f.default)}
         if f.name == "strategy":
             kw["choices"] = STRATEGIES
+        if f.name == "precision":
+            kw["choices"] = PRECISIONS
         p.add_argument("--" + f.name.replace("_", "-"), dest=f.name, **kw)
     return Config(**vars(p.parse_args(argv)))
