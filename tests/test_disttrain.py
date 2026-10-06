@@ -9,6 +9,7 @@ import subprocess
 import sys
 
 import pytest
+import torch
 
 from disttrain.config import Config
 from disttrain.data import MarkovData
@@ -125,3 +126,36 @@ def test_resume_needs_steps_left(tmp_path):
     train(small_config(strategy="single", steps=2, save=ckpt))
     with pytest.raises(SystemExit, match="already at step 2"):
         train(small_config(strategy="single", steps=2, resume=ckpt))
+
+
+# ---------------------------------------------------------------- mixed precision
+
+@pytest.fixture(scope="module")
+def bf16_baseline():
+    return train(small_config(strategy="single", precision="bf16"))
+
+
+def test_bf16_tracks_fp32(bf16_baseline, baseline):
+    assert bf16_baseline["losses"] != baseline["losses"]          # it really ran in bf16
+    for got, want in zip(bf16_baseline["losses"], baseline["losses"]):
+        assert got == pytest.approx(want, abs=0.05)
+
+
+def test_bf16_keeps_fp32_weights_and_optimizer_state(bf16_baseline):
+    mem = bf16_baseline["per_rank"][0]["memory"]
+    assert mem["params"] == bf16_baseline["n_params"] * 4
+    assert mem["optimizer"] == bf16_baseline["n_params"] * 8      # exp_avg + exp_avg_sq, fp32
+
+
+@pytest.mark.parametrize("strategy", ["ddp", "fsdp", "pipeline"])
+def test_bf16_strategy_tracks_bf16_single(strategy, bf16_baseline, tmp_path):
+    # Not bit-exact: bf16 rounding depends on how the batch and gradients are split.
+    result = run_torchrun(strategy, 2, tmp_path, "--precision", "bf16")
+    for got, want in zip(result["losses"], bf16_baseline["losses"]):
+        assert got == pytest.approx(want, abs=0.02)
+
+
+@pytest.mark.skipif(torch.cuda.is_available(), reason="only meaningful without a GPU")
+def test_fp16_needs_a_gpu():
+    with pytest.raises(SystemExit, match="needs a GPU"):
+        train(small_config(strategy="single", precision="fp16"))

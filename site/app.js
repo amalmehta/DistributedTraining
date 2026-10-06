@@ -379,6 +379,33 @@
       $("#resumeCard").hidden = false;
     }
 
+    // mixed precision: bf16 runs against the fp32 single run
+    const pr = data.precision;
+    if (pr) {
+      const ref = css("--text-3");
+      const pSteps = steps.slice(0, pr.steps);
+      const sets = [{ label: "fp32 single (reference)", data: single.losses.slice(0, pr.steps), borderColor: ref + "66", borderWidth: 8, borderJoinStyle: "round", pointRadius: 0, pointHoverRadius: 4, order: 2 }]
+        .concat(pr.runs.map((r) => ({
+          label: `bf16 ${r.world === 1 ? "Single" : `${NAMES[r.strategy]} ×${r.world}`}`,
+          data: r.losses, borderColor: css(SLOT[r.strategy]), borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, order: 1,
+        })));
+      charts.push(new Chart($("#bf16Chart"), {
+        type: "line",
+        data: { labels: pSteps, datasets: sets },
+        options: {
+          responsive: true, maintainAspectRatio: false, animation: false,
+          interaction: { mode: "index", intersect: false },
+          plugins: { legend: { display: false }, tooltip: { ...tooltip, callbacks: { title: (i) => `Step ${i[0].label}`, label: (c) => ` ${c.dataset.label}: ${c.parsed.y.toFixed(4)}` } } },
+          scales: scales("loss (nats)", { x: { ticks: { color: text2, maxTicksLimit: 8 }, title: { display: true, text: "step", color: text3 } } }),
+        },
+      }));
+      $("#bf16Legend").innerHTML = sets.map((d, i) =>
+        `<span><i style="background:${d.borderColor}${i ? "" : ";height:7px"}"></i>${d.label}</span>`).join("");
+      const worst = Math.max(...pr.runs.slice(1).map((r) => r.max_diff_vs_single));
+      $("#bf16Note").textContent = `Matmuls and attention run in bf16; weights, gradients and Adam state stay fp32. bf16 stays within ${pr.max_diff_vs_fp32.toFixed(3)} of fp32, and the strategies stay within ${worst.toFixed(3)} of each other — close, not bit-exact, because bf16 rounding depends on how the work is split. First ${pr.steps} steps; this CPU has no native bf16, so bf16 is slower here — the speed and memory gains show up on GPUs.`;
+      $("#bf16Card").hidden = false;
+    }
+
     const labels = runs.map(label);
     const barBase = { borderRadius: 4, borderSkipped: "bottom", maxBarThickness: 44 };
 

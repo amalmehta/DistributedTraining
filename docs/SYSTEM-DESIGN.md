@@ -4,7 +4,8 @@
 
 A small PyTorch package that trains one transformer with one training loop, and lets the work be
 split four ways — single process, DDP, FSDP or pipeline — by changing `--strategy`. Runs can be
-saved to one checkpoint file and resumed under any strategy and process count. A static
+saved to one checkpoint file and resumed under any strategy and process count, and run in fp32 or
+bf16/fp16 mixed precision with one flag. A static
 website explains each strategy with animated diagrams and shows results from real runs, including
 the main claim: every strategy produces the same loss as the single process at every step.
 
@@ -61,6 +62,7 @@ flowchart LR
 | `model.py` | `TinyGPT` as a flat `ModuleList`: `Embed`, `Block × n_layers`, `Head`. The flat list is what lets FSDP wrap per-Block and the pipeline cut into stages. `build_model` seeds before construction so every rank starts from identical weights. |
 | `strategies/base.py` | The `Strategy` interface (`setup`, `train_step`, `comm_bytes_per_step`, `full_state`, `load_full_state`) plus shared helpers: AdamW, the data-parallel row slice, memory accounting from the tensors the rank actually holds, and the default checkpoint conversion (parameters and AdamW state keyed by TinyGPT names). |
 | `checkpoint.py` | `save` (collective; rank 0 writes atomically via a temp file + rename) and `load` (every rank reads the file, checks the model shape matches, hands it to the strategy, returns the step to continue from). |
+| Mixed precision (in `strategies/base.py`) | `autocast()` wraps each strategy's forward pass and loss in `torch.autocast` for bf16/fp16 (a no-op for fp32). `backward()` and `optimizer_step()` go through a `GradScaler` for fp16 — FSDP swaps in `ShardedGradScaler` so all ranks agree on overflow — and straight through otherwise. |
 | `strategies/single.py` | Whole model, whole batch, one process. |
 | `strategies/ddp.py` | `DistributedDataParallel`; each rank trains on `global_batch / W` rows; gradients are all-reduced during backward. |
 | `strategies/fsdp.py` | `FullyShardedDataParallel` with a `ModuleWrapPolicy({Block})`; the optimizer is created after wrapping so it only sees (and stores Adam state for) local shards. For checkpoints it uses FSDP's full state dict: shards are gathered to rank 0 on save, and each rank keeps only its shard on load. |
@@ -85,6 +87,13 @@ flowchart LR
   receives activations from rank−1, runs its layers, sends to rank+1. The last stage computes
   `loss / M` per microbatch. Backward goes in reverse with activation gradients. Each stage steps
   its own optimizer.
+
+**Mixed precision.** With `--precision bf16`, every strategy runs its forward pass and loss
+inside `torch.autocast`: linear layers and attention compute in bf16, while the loss and
+normalisation stay in fp32 and the master weights, gradients and AdamW state remain fp32. The
+pipeline casts the activations it sends to fp32, so the send/recv buffers don't depend on
+precision. fp16 additionally scales the loss before backward and unscales before the optimizer
+step (skipping the step when gradients overflow).
 
 **Save and resume.** At the end of a run (and every `--save-every` steps) every rank calls
 `strategy.full_state()`: single/DDP already hold everything; FSDP all-gathers its shards to
@@ -143,6 +152,13 @@ There is no database or server.
 - **Resume state is just weights, AdamW state and the step.** No LR schedule, no dropout and
   step-addressed data mean nothing else is needed for an exact continuation. Same strategy:
   bit-identical. Different strategy: within the same ~1e-6 as the strategies differ anyway.
+- **Mixed precision via autocast, weights kept in fp32.** One code path for every strategy, and
+  checkpoints don't change. Trade-off: no memory saving on weights or optimizer state, and FSDP
+  still communicates fp32 (FSDP's own `MixedPrecision` policy would halve that but is a second
+  code path). Under bf16 the strategies are no longer bit-identical to each other: rounding
+  depends on how the batch and gradient sums are split, so they agree to ~1e-2, not ~1e-6.
+- **fp16 only where it can be tested to make sense.** It needs a GradScaler; across pipeline
+  stages each scaler would have to share one scale and skip decision, so pipeline rejects fp16.
 - **Static site with data baked in.** Works on GitHub Pages and from disk; no backend to run.
 
 ## How it's tested
@@ -159,7 +175,11 @@ There is no database or server.
 - save at step 3 and resume (single → single) reproduces the uninterrupted losses bit-for-bit;
 - save under DDP×2 → resume FSDP×2, FSDP×2 → pipeline×2, pipeline×2 → single all continue on
   the single-process curve within 1e-4;
-- resuming with a different model shape, or with no steps left, stops with a clear message.
+- resuming with a different model shape, or with no steps left, stops with a clear message;
+- bf16 single tracks fp32 within 0.05 and really differs from it; weights and AdamW state stay
+  fp32 under bf16;
+- DDP×2, FSDP×2 and pipeline×2 in bf16 track the bf16 single run within 0.02;
+- fp16 without a GPU stops with a clear message.
 
 The benchmark repeats the equivalence check at full size for every configuration and for the
 checkpoint demo; the site shows the largest gaps.
@@ -174,7 +194,9 @@ The site was checked in a browser at desktop and phone width, light and dark.
   not scaling.
 - Checkpoints are one full file (no sharded save), carry no data-loader or RNG state (none is
   needed here), and on multiple machines must sit on storage every machine can read.
-- No mixed precision, no gradient clipping, no tensor parallelism, and no
+- fp16 (and all GPU paths) are untested here; bf16 on this CPU is emulated and slower than fp32.
+  The fp16 loss scale isn't saved in checkpoints, so a resumed fp16 run restarts its scale.
+- No gradient clipping, no tensor parallelism, and no
   combined strategies (e.g. pipeline + data parallel).
 - Pipeline: GPipe schedule only, stages balanced by block count rather than measured cost, and
   every stage stores activations for all M microbatches.

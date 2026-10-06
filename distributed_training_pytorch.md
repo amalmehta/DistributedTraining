@@ -65,13 +65,16 @@ Decided without asking:
 - Data is a synthetic Markov chain (no downloads, known best-possible loss).
 - Every strategy is built to match single-process training exactly; tests and the benchmark check it.
 - Communication volume on the site is a formula, not a measurement (Gloo has no byte counters).
-- No mixed precision or combined strategies — proposals, not built.
+- No combined strategies — proposal, not built.
+- Mixed precision (asked 2026-10-05): --precision fp32|bf16|fp16 via autocast, weights stay fp32;
+  site compares bf16 with fp32. fp16 is GPU-only and untested here; pipeline rejects fp16.
 - Checkpoints (asked 2026-10-04): one portable file any strategy can resume from; site shows a
   run saved under DDP x4 and finished under FSDP x2.
 
 CHANGELOG:
 
 - 2026-10-04 — created
+- 2026-10-05 — added mixed precision training (--precision), tests, site chart
 - 2026-10-04 — added checkpoint save and resume (portable across strategies), tests, site chart
 - 2026-10-04 — built: disttrain package (single/DDP/FSDP/pipeline), tests, benchmark, site on GitHub Pages; filled in assumptions
 - 2026-09-15 — added meta-instruction: built-out applications include a small feedback tab

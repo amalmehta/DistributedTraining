@@ -36,6 +36,7 @@ Every run prints the loss every 10 steps and, with `--out some/folder`, writes
 | `--global-batch` | 32 | sequences per step, summed over all ranks (must divide by the process count) |
 | `--microbatches` | 4 | pipeline only: pieces each batch is cut into (must divide the batch) |
 | `--d-model`, `--n-heads`, `--n-layers`, `--seq-len`, `--vocab-size` | 128, 4, 4, 64, 64 | model size |
+| `--precision` | `fp32` | `fp32`, or mixed precision `bf16` / `fp16` (fp16 needs a GPU) |
 | `--lr`, `--weight-decay` | 3e-3, 0.01 | AdamW settings |
 | `--seed`, `--data-seed` | 0, 1234 | model init, data |
 | `--log-every` | 10 | print interval |
@@ -45,6 +46,20 @@ Every run prints the loss every 10 steps and, with `--out some/folder`, writes
 | `--resume` | (none) | checkpoint file to continue from |
 
 Pipeline needs at least one transformer block per process: `--n-layers` ≥ processes.
+
+### Mixed precision
+
+Add `--precision bf16` to any strategy:
+
+```bash
+.venv/bin/torchrun --nproc-per-node 4 -m disttrain.train --strategy fsdp --precision bf16
+```
+
+Matmuls and attention run in bf16 inside `torch.autocast`; weights, gradients and AdamW state
+stay fp32, so checkpoints are the same either way and you can switch precision on resume.
+`--precision fp16` uses a gradient scaler and needs a CUDA GPU; the pipeline strategy supports
+fp32 and bf16 only. On a CPU without native bf16 (like an Intel Mac) bf16 runs, but it's slower
+than fp32 — the speed-up is a GPU feature.
 
 ### Save and resume
 
@@ -91,10 +106,12 @@ a run saved under one strategy resumes correctly under another.
 .venv/bin/python scripts/benchmark.py --quick  # 10 steps per run, to check it works
 ```
 
-`--resume-only` keeps the existing runs and redoes just the checkpoint demo (DDP ×4 for half
-the steps, saved, then finished under FSDP ×2).
+`--only runs,resume,precision` reruns just the named parts and keeps the rest from the existing
+results: `runs` is the seven fp32 configurations, `resume` the checkpoint demo (DDP ×4 for half
+the steps, saved, then finished under FSDP ×2), `precision` the four bf16 runs (40 steps by default, `--precision-steps N` to change; bf16 is slow
+on CPUs without native support).
 
-This runs the seven configurations shown on the site, plus the checkpoint demo, and rewrites
+By default it runs all three parts and rewrites
 `site/data/results.json` and `site/data/results.js`.
 
 ## View the site

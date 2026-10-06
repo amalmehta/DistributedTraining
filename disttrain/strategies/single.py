@@ -15,7 +15,8 @@ class SingleStrategy(Strategy):
 
     def train_step(self, tokens, targets):
         self.optimizer.zero_grad(set_to_none=True)
-        loss = lm_loss(self.model(tokens.to(self.ctx.device)), targets.to(self.ctx.device))
-        loss.backward()
-        self.optimizer.step()
+        with self.autocast():
+            loss = lm_loss(self.model(tokens.to(self.ctx.device)), targets.to(self.ctx.device))
+        self.backward(loss)
+        self.optimizer_step()
         return loss.item()

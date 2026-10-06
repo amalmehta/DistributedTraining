@@ -75,6 +75,12 @@
       <div class="chart-box"><canvas id="resumeChart" aria-label="Loss of a run that was checkpointed and resumed under another strategy"></canvas></div>
     </figure>
 
+    <figure class="chart-card" id="bf16Card" hidden>
+      <figcaption><b>Mixed precision: the same runs in bf16</b><span id="bf16Note"></span></figcaption>
+      <div class="legend" id="bf16Legend"></div>
+      <div class="chart-box"><canvas id="bf16Chart" aria-label="Loss of bf16 mixed-precision runs compared with fp32"></canvas></div>
+    </figure>
+
     <div class="grid2">
       <figure class="chart-card">
         <figcaption><b>Memory held per rank</b><span>Parameters, gradients and Adam state on the busiest rank.</span></figcaption>
@@ -109,6 +115,8 @@ uv pip install -p .venv/bin/python torch "numpy&lt;2" pytest</code></pre>
 .venv/bin/torchrun --nproc-per-node 4 -m disttrain.train --strategy ddp
 .venv/bin/torchrun --nproc-per-node 4 -m disttrain.train --strategy fsdp
 .venv/bin/torchrun --nproc-per-node 4 -m disttrain.train --strategy pipeline</code></pre>
+<pre><code><span class="c"># mixed precision: any strategy, add one flag</span>
+.venv/bin/torchrun --nproc-per-node 4 -m disttrain.train --strategy fsdp --precision bf16</code></pre>
 <pre><code><span class="c"># save halfway, finish under another strategy</span>
 .venv/bin/torchrun --nproc-per-node 4 -m disttrain.train --strategy ddp --steps 75 --save ckpt.pt
 .venv/bin/torchrun --nproc-per-node 2 -m disttrain.train --strategy fsdp --steps 150 --resume ckpt.pt</code></pre>

@@ -5,6 +5,8 @@ batch and gets back the global mean loss. How the work is split — by rows,
 by parameter shards, or by layers — is entirely the strategy's business.
 """
 
+import contextlib
+
 import torch
 
 from ..config import Config
@@ -22,6 +24,9 @@ class Strategy:
         self.cfg, self.ctx = cfg, ctx
         self.model = None
         self.optimizer = None
+        self.scaler = None
+        if cfg.precision == "fp16" and ctx.device.type != "cuda":
+            raise SystemExit("--precision fp16 needs a GPU; use bf16 on CPU")
 
     # --- subclasses fill these in -------------------------------------------------
     def setup(self):
@@ -69,7 +74,33 @@ class Strategy:
 
     # --- shared helpers ------------------------------------------------------------
     def make_optimizer(self, params):
+        if self.cfg.precision == "fp16":
+            self.scaler = self.make_scaler()
         return torch.optim.AdamW(params, lr=self.cfg.lr, weight_decay=self.cfg.weight_decay)
+
+    # --- mixed precision ---------------------------------------------------------------
+    # Weights, gradients and AdamW state stay fp32. Inside autocast, matmuls and attention
+    # run in bf16/fp16; PyTorch keeps reductions such as the loss in fp32.
+
+    def autocast(self):
+        if self.cfg.precision == "fp32":
+            return contextlib.nullcontext()
+        dtype = torch.bfloat16 if self.cfg.precision == "bf16" else torch.float16
+        return torch.autocast(device_type=self.ctx.device.type, dtype=dtype)
+
+    def make_scaler(self):
+        """fp16 only: scale the loss up so small gradients don't flush to zero."""
+        return torch.cuda.amp.GradScaler()
+
+    def backward(self, loss):
+        (self.scaler.scale(loss) if self.scaler else loss).backward()
+
+    def optimizer_step(self):
+        if self.scaler:
+            self.scaler.step(self.optimizer)   # unscales; skips the step if grads overflowed
+            self.scaler.update()
+        else:
+            self.optimizer.step()
 
     def local_rows(self, tokens, targets):
         """Data parallel: this rank's contiguous slice of the global batch."""
