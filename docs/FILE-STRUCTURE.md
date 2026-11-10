@@ -9,13 +9,13 @@ disttrain/                    the training package
   train.py                    entry point and the strategy-agnostic training loop
   checkpoint.py               save/load one portable checkpoint file (any strategy -> any strategy)
   strategies/
-    base.py                   Strategy interface + memory accounting
+    base.py                   Strategy interface, mixed precision (autocast, grad scaling), memory accounting
     single.py                 one process (the reference)
     ddp.py                    DistributedDataParallel
     fsdp.py                   FullyShardedDataParallel, one shard group per Block
     pipeline.py               hand-written GPipe schedule with send/recv
 tests/test_disttrain.py       unit tests + "every strategy matches single" via real torchrun
-scripts/benchmark.py          runs 7 configurations + the checkpoint demo, writes site/data/results.{json,js}
+scripts/benchmark.py          runs 7 fp32 configurations, the checkpoint demo and 4 bf16 runs; writes site/data/results.{json,js}
 site/                         the static website (GitHub Pages serves this folder)
   index.html, style.css       page and styling
   app.js                      animated strategy diagrams + Chart.js charts

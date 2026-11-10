@@ -23,9 +23,10 @@ class DDPStrategy(Strategy):
     def train_step(self, tokens, targets):
         tokens, targets = self.local_rows(tokens, targets)
         self.optimizer.zero_grad(set_to_none=True)
-        loss = lm_loss(self.model(tokens), targets)
-        loss.backward()                 # gradient all-reduce overlaps with this
-        self.optimizer.step()
+        with self.autocast():
+            loss = lm_loss(self.model(tokens), targets)
+        self.backward(loss)             # gradient all-reduce overlaps with this
+        self.optimizer_step()
         # Average the per-rank losses only for logging; training doesn't need it.
         report = loss.detach().clone()
         dist.all_reduce(report, op=dist.ReduceOp.SUM)

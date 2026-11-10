@@ -32,12 +32,18 @@ class FSDPStrategy(Strategy):
     def train_step(self, tokens, targets):
         tokens, targets = self.local_rows(tokens, targets)
         self.optimizer.zero_grad(set_to_none=True)
-        loss = lm_loss(self.model(tokens), targets)
-        loss.backward()
-        self.optimizer.step()
+        with self.autocast():
+            loss = lm_loss(self.model(tokens), targets)
+        self.backward(loss)
+        self.optimizer_step()
         report = loss.detach().clone()
         dist.all_reduce(report, op=dist.ReduceOp.SUM)
         return report.item() / self.ctx.world
+
+    def make_scaler(self):
+        # Gradients live in shards, so the overflow check has to be agreed across ranks.
+        from torch.distributed.fsdp.sharded_grad_scaler import ShardedGradScaler
+        return ShardedGradScaler()
 
     def _full_state_dict_type(self, rank0_only):
         # Offload only from GPU: on a CPU device, offload_to_cpu frees the very storage it reads.
